@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from inventory_engine import compute_inventory_policy, compute_abc_xyz_matrix
@@ -53,12 +53,19 @@ if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
 @app.get("/", response_class=HTMLResponse)
-def serve_dashboard():
-    index_path = FRONTEND_DIR / "index.html"
-    if index_path.exists():
-        with open(index_path, "r", encoding="utf-8") as f:
-            return HTMLResponse(content=f.read())
-    return HTMLResponse(content="<h1>Frontend index.html not found.</h1>", status_code=404)
+def serve_ui():
+    # Check multiple relative paths so it works both locally and on Render
+    possible_paths = [
+        os.path.join(os.path.dirname(__file__), "..", "frontend", "index.html"),
+        os.path.join(os.getcwd(), "frontend", "index.html"),
+        os.path.join(os.getcwd(), "..", "frontend", "index.html")
+    ]
+    
+    for path in possible_paths:
+        if os.path.exists(path):
+            return FileResponse(path)
+            
+    return HTMLResponse("<h2>Frontend index.html not found.</h2>", status_code=404)
 
 
 # Request Schema for Single Analysis
