@@ -54,18 +54,203 @@ if FRONTEND_DIR.exists():
 
 @app.get("/", response_class=HTMLResponse)
 def serve_ui():
-    # Check multiple relative paths so it works both locally and on Render
-    possible_paths = [
-        os.path.join(os.path.dirname(__file__), "..", "frontend", "index.html"),
-        os.path.join(os.getcwd(), "frontend", "index.html"),
-        os.path.join(os.getcwd(), "..", "frontend", "index.html")
-    ]
-    
-    for path in possible_paths:
-        if os.path.exists(path):
-            return FileResponse(path)
-            
-    return HTMLResponse("<h2>Frontend index.html not found.</h2>", status_code=404)
+    return """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>Live ML Demand Engine with Explainable AI & Alerts</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    </head>
+    <body class="bg-gray-900 text-gray-100 p-8">
+        <div class="max-w-6xl mx-auto space-y-6">
+            <header class="border-b border-gray-700 pb-4">
+                <h1 class="text-2xl font-bold text-indigo-400">⚡ Live ML Demand Engine with Explainable AI</h1>
+                <p class="text-sm text-gray-400">Real-time inventory integration, dynamic stockout alerts, and XGBoost feature attribution.</p>
+            </header>
+
+            <div class="bg-gray-800 p-6 rounded-lg border border-gray-700">
+                <h2 class="text-lg font-semibold mb-3">1. Real-Time Data Integration (Sales CSV)</h2>
+                <div class="flex items-center space-x-4">
+                    <input type="file" id="csvFile" accept=".csv" class="text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:bg-indigo-600 file:text-white hover:file:bg-indigo-500 cursor-pointer"/>
+                    <button onclick="uploadCSV()" class="bg-indigo-600 hover:bg-indigo-500 px-5 py-2 rounded-md font-semibold text-sm">Upload & Sync Sales</button>
+                </div>
+                <p id="uploadStatus" class="mt-2 text-sm text-gray-400"></p>
+            </div>
+
+            <div id="controlPanel" class="bg-gray-800 p-6 rounded-lg border border-gray-700 hidden space-y-4">
+                <h2 class="text-lg font-semibold">2. Live Model Training & Inventory Controls</h2>
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-400 mb-1">Select SKU</label>
+                        <select id="skuSelect" onchange="trainModel()" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm"></select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-400 mb-1">Forecast Days</label>
+                        <input type="number" id="forecastDays" value="30" min="7" max="90" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm"/>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-gray-400 mb-1">Lead Time (Days)</label>
+                        <input type="number" id="leadTime" value="7" min="1" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-sm"/>
+                    </div>
+                    <div class="flex items-end">
+                        <button onclick="trainModel()" class="w-full bg-emerald-600 hover:bg-emerald-500 py-2 rounded font-semibold text-sm">Train & Evaluate</button>
+                    </div>
+                </div>
+
+                <div class="pt-3 border-t border-gray-700 flex items-center justify-between">
+                    <span class="text-xs font-semibold text-indigo-300">⚡ Live Warehouse Stock Sync:</span>
+                    <div class="flex items-center space-x-2">
+                        <input type="number" id="liveStockInput" placeholder="New Stock Qty" class="bg-gray-700 border border-gray-600 rounded px-3 py-1 text-sm w-36"/>
+                        <button onclick="updateLiveStock()" class="bg-purple-600 hover:bg-purple-500 px-3 py-1 rounded text-xs font-semibold">Update Live Stock</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="alertBanner" class="p-4 rounded-lg border hidden font-semibold text-sm"></div>
+
+            <div id="resultsPanel" class="space-y-6 hidden">
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div class="bg-gray-800 p-4 rounded border border-gray-700">
+                        <p class="text-xs text-gray-400 font-semibold">WMAPE (Model Accuracy)</p>
+                        <h3 id="mWMAPE" class="text-xl font-bold text-indigo-400">--</h3>
+                    </div>
+                    <div class="bg-gray-800 p-4 rounded border border-gray-700">
+                        <p class="text-xs text-gray-400 font-semibold">Current Stock / Coverage</p>
+                        <h3 id="mCurrentStock" class="text-xl font-bold text-gray-200">--</h3>
+                    </div>
+                    <div class="bg-gray-800 p-4 rounded border border-gray-700">
+                        <p class="text-xs text-gray-400 font-semibold">Calculated Safety Stock</p>
+                        <h3 id="mSS" class="text-xl font-bold text-emerald-400">--</h3>
+                    </div>
+                    <div class="bg-gray-800 p-4 rounded border border-gray-700">
+                        <p class="text-xs text-gray-400 font-semibold">Reorder Point (ROP)</p>
+                        <h3 id="mROP" class="text-xl font-bold text-amber-400">--</h3>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="md:col-span-2 bg-gray-800 p-6 rounded-lg border border-gray-700">
+                        <h3 class="text-lg font-semibold mb-4">Historical Demand vs Live XGBoost Forecast</h3>
+                        <div class="h-80">
+                            <canvas id="forecastChart"></canvas>
+                        </div>
+                    </div>
+
+                    <div class="bg-gray-800 p-6 rounded-lg border border-gray-700">
+                        <h3 class="text-lg font-semibold mb-2 text-indigo-300">💡 Explainable AI (XAI)</h3>
+                        <p class="text-xs text-gray-400 mb-4">Feature importance ranking explaining why the model predicted these values:</p>
+                        <div id="xaiList" class="space-y-3"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <script>
+            let chartInstance = null;
+
+            async function uploadCSV() {
+                const fileInput = document.getElementById('csvFile');
+                if (!fileInput.files[0]) return alert("Select a CSV file first.");
+                const formData = new FormData();
+                formData.append('file', fileInput.files[0]);
+                document.getElementById('uploadStatus').innerText = "Uploading & processing data...";
+
+                const res = await fetch('/api/upload-csv', { method: 'POST', body: formData });
+                const data = await res.json();
+
+                if (res.ok) {
+                    document.getElementById('uploadStatus').innerText = `Synced ${data.total_rows} records across ${data.skus.length} SKUs.`;
+                    document.getElementById('skuSelect').innerHTML = data.skus.map(s => `<option value="${s}">${s}</option>`).join('');
+                    document.getElementById('controlPanel').classList.remove('hidden');
+                    trainModel();
+                } else {
+                    document.getElementById('uploadStatus').innerText = `Error: ${data.detail}`;
+                }
+            }
+
+            async function updateLiveStock() {
+                const sku = document.getElementById('skuSelect').value;
+                const newStock = document.getElementById('liveStockInput').value;
+                if (!newStock) return alert("Enter a stock quantity.");
+
+                await fetch(`/api/update-stock?product_id=${sku}&new_stock=${newStock}`, { method: 'POST' });
+                trainModel();
+            }
+
+            async function trainModel() {
+                const sku = document.getElementById('skuSelect').value;
+                const days = document.getElementById('forecastDays').value;
+                const leadTime = document.getElementById('leadTime').value;
+
+                const res = await fetch(`/api/train-sku/${sku}?forecast_days=${days}&lead_time_days=${leadTime}`);
+                const data = await res.json();
+                if (!res.ok) return alert(data.detail);
+
+                document.getElementById('resultsPanel').classList.remove('hidden');
+
+                const alertBanner = document.getElementById('alertBanner');
+                alertBanner.classList.remove('hidden', 'bg-red-900/50', 'border-red-600', 'text-red-200', 'bg-amber-900/50', 'border-amber-600', 'text-amber-200', 'bg-emerald-900/50', 'border-emerald-600', 'text-emerald-200');
+                
+                if (data.inventory.alert_level === 'CRITICAL') {
+                    alertBanner.classList.add('bg-red-900/50', 'border-red-600', 'text-red-200');
+                    alertBanner.innerHTML = `🚨 <strong>CRITICAL STOCKOUT RISK:</strong> ${data.inventory.alert_message}`;
+                } else if (data.inventory.alert_level === 'WARNING') {
+                    alertBanner.classList.add('bg-amber-900/50', 'border-amber-600', 'text-amber-200');
+                    alertBanner.innerHTML = `⚠️ <strong>LOW STOCK WARNING:</strong> ${data.inventory.alert_message}`;
+                } else {
+                    alertBanner.classList.add('bg-emerald-900/50', 'border-emerald-600', 'text-emerald-200');
+                    alertBanner.innerHTML = `✅ <strong>OPTIMAL INVENTORY:</strong> ${data.inventory.alert_message}`;
+                }
+
+                document.getElementById('mWMAPE').innerText = `${data.evaluation.wmape_percent}%`;
+                document.getElementById('mCurrentStock').innerText = `${data.inventory.current_stock} units (${data.inventory.days_of_supply}d)`;
+                document.getElementById('mSS').innerText = `${data.inventory.safety_stock} units`;
+                document.getElementById('mROP').innerText = `${data.inventory.reorder_point} units`;
+                document.getElementById('liveStockInput').value = data.inventory.current_stock;
+
+                const xaiList = document.getElementById('xaiList');
+                xaiList.innerHTML = data.explainable_ai.map(item => `
+                    <div>
+                        <div class="flex justify-between text-xs mb-1">
+                            <span class="text-gray-300 font-medium">${item.feature}</span>
+                            <span class="text-indigo-400 font-semibold">${item.importance_pct}%</span>
+                        </div>
+                        <div class="w-full bg-gray-700 rounded-full h-2">
+                            <div class="bg-indigo-500 h-2 rounded-full" style="width: ${item.importance_pct}%"></div>
+                        </div>
+                    </div>
+                `).join('');
+
+                const histDates = data.history.map(d => d.date);
+                const histSales = data.history.map(d => d.sales);
+                const fcDates = data.forecast.map(d => d.date);
+                const fcSales = data.forecast.map(d => d.forecast);
+
+                const labels = [...histDates, ...fcDates];
+                const histDataset = [...histSales, ...Array(fcDates.length).fill(null)];
+                const fcDataset = [...Array(histDates.length - 1).fill(null), histSales[histSales.length - 1], ...fcSales];
+
+                const ctx = document.getElementById('forecastChart').getContext('2d');
+                if (chartInstance) chartInstance.destroy();
+
+                chartInstance = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            { label: 'Historical Sales', data: histDataset, borderColor: '#6366f1', backgroundColor: 'rgba(99, 102, 241, 0.1)', fill: true },
+                            { label: 'XGBoost Forecast', data: fcDataset, borderColor: '#10b981', borderDash: [5, 5], backgroundColor: 'rgba(16, 185, 129, 0.1)', fill: true }
+                        ]
+                    },
+                    options: { responsive: true, maintainAspectRatio: false }
+                });
+            }
+        </script>
+    </body>
+    </html>
+    """
 
 
 # Request Schema for Single Analysis
