@@ -5,12 +5,10 @@ import pandas as pd
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from typing import Optional
 from xgboost import XGBRegressor
 
 app = FastAPI(title="NexusSCM Enterprise | MLOps Engine")
 
-# Global state for dataset & model
 DATA_STORE = {
     "df": None,
     "model": None,
@@ -32,11 +30,9 @@ class SinglePredictRequest(BaseModel):
 @app.post("/api/single-predict")
 @app.post("/single-predict")
 def single_predict(req: SinglePredictRequest):
-    # Simulated Joblib Model Single SKU Inference calculation
     base_demand = req.lag_1 * 0.85 + (req.unit_price * 0.05)
     days = req.forecast_horizon
     
-    # Generate forecast overlay points
     dates = [f"Day {i+1}" for i in range(days)]
     forecast_values = [round(base_demand + np.sin(i / 2) * 2 + np.random.normal(0, 0.5), 2) for i in range(days)]
     
@@ -62,7 +58,6 @@ async def batch_predict(file: UploadFile = File(...)):
         contents = await file.read()
         df = pd.read_csv(io.BytesIO(contents))
         
-        # Standardize column headers
         col_mapping = {}
         for col in df.columns:
             c_lower = col.strip().lower()
@@ -76,7 +71,6 @@ async def batch_predict(file: UploadFile = File(...)):
         df = df.rename(columns=col_mapping)
         DATA_STORE["df"] = df
         
-        # Calculate summary metrics for dataset
         sales_data = df['quantity_sold'].dropna().values if 'quantity_sold' in df.columns else np.random.randint(10, 50, size=30)
         avg_q = np.mean(sales_data)
         rop = int(np.ceil(avg_q * 7 + (1.65 * np.std(sales_data) * np.sqrt(7))))
@@ -114,17 +108,27 @@ def serve_nexus_ui():
             body { background-color: #0b1120; color: #94a3b8; font-family: ui-sans-serif, system-ui, sans-serif; }
             .bg-card { background-color: #0f172a; border-color: #1e293b; }
             .bg-sidebar { background-color: #070d19; border-color: #1e293b; }
-            .text-teal-accent { color: #00f2fe; }
             .bg-teal-button { background-color: #00d2d3; }
             .bg-teal-button:hover { background-color: #00b8b9; }
         </style>
     </head>
-    <body class="flex h-screen overflow-hidden">
+    <body class="flex flex-col md:flex-row h-screen overflow-hidden">
 
-        <!-- Sidebar Navigation -->
-        <aside class="w-64 bg-sidebar border-r flex flex-col justify-between p-4 flex-shrink-0">
+        <!-- Mobile Header Bar -->
+        <div class="md:hidden bg-sidebar p-4 border-b border-slate-800 flex justify-between items-center z-50">
+            <div class="flex items-center space-x-2">
+                <div class="bg-teal-500 text-slate-950 font-black rounded p-1 text-sm w-7 h-7 flex items-center justify-center">N</div>
+                <span class="text-white font-bold text-sm">NexusSCM</span>
+            </div>
+            <button onclick="toggleMobileMenu()" class="text-cyan-400 p-2 focus:outline-none">
+                <i class="fa-solid fa-bars text-lg"></i>
+            </button>
+        </div>
+
+        <!-- Sidebar Navigation Drawer -->
+        <aside id="sidebar" class="fixed md:relative inset-y-0 left-0 w-64 bg-sidebar border-r flex flex-col justify-between p-4 flex-shrink-0 transform -translate-x-full md:translate-x-0 transition-transform duration-200 ease-in-out z-40">
             <div>
-                <div class="flex items-center space-x-3 mb-8 px-2">
+                <div class="hidden md:flex items-center space-x-3 mb-8 px-2">
                     <div class="bg-teal-500 text-slate-950 font-black rounded p-2 text-xl w-10 h-10 flex items-center justify-center">N</div>
                     <div>
                         <h1 class="text-white font-bold text-lg leading-none">NexusSCM</h1>
@@ -160,8 +164,8 @@ def serve_nexus_ui():
             </div>
         </aside>
 
-        <!-- Main Content View -->
-        <main class="flex-1 overflow-y-auto p-8 space-y-6">
+        <!-- Main Content Area -->
+        <main class="flex-1 overflow-y-auto p-4 md:p-8 space-y-6">
 
             <!-- How System Works Banner -->
             <div id="guideBanner" class="bg-card border rounded-xl p-5 relative">
@@ -191,14 +195,14 @@ def serve_nexus_ui():
             </div>
 
             <!-- Single SKU Form Panel -->
-            <div id="singlePanel" class="bg-card border rounded-xl p-6 space-y-4">
+            <div id="singlePanel" class="bg-card border rounded-xl p-4 md:p-6 space-y-4">
                 <div class="flex items-center space-x-2 text-xs font-bold text-cyan-400 uppercase tracking-wide">
                     <i class="fa-solid fa-bolt"></i>
                     <span>SINGLE SKU REAL-TIME INFERENCE</span>
                 </div>
                 <p class="text-xs text-slate-400">Input historical signals for a single item to run predictions against the saved <code class="text-cyan-300">model.joblib</code> artifact.</p>
 
-                <div class="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs pt-2">
+                <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 text-xs pt-2">
                     <div>
                         <label class="block font-semibold mb-1 text-slate-300">Product Category</label>
                         <select id="pCat" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white">
@@ -212,7 +216,7 @@ def serve_nexus_ui():
                         <input type="number" id="pLag1" value="18" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white"/>
                     </div>
                     <div>
-                        <label class="block font-semibold mb-1 text-slate-300">Unit Price (\$) </label>
+                        <label class="block font-semibold mb-1 text-slate-300">Unit Price ($)</label>
                         <input type="number" id="pPrice" value="55" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white"/>
                     </div>
                     <div>
@@ -221,7 +225,7 @@ def serve_nexus_ui():
                     </div>
                 </div>
 
-                <div class="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs pt-1">
+                <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 text-xs pt-1">
                     <div>
                         <label class="block font-semibold mb-1 text-slate-300">Supplier Lead Time (Days)</label>
                         <input type="number" id="pLead" value="7" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white"/>
@@ -234,7 +238,7 @@ def serve_nexus_ui():
                             <option value="60">60 Days</option>
                         </select>
                     </div>
-                    <div class="md:col-span-2 flex items-end">
+                    <div class="sm:col-span-2 flex items-end">
                         <button onclick="runSinglePredict()" class="w-full bg-teal-button text-slate-950 font-bold py-3 rounded-lg text-sm transition">
                             Run Single SKU Prediction
                         </button>
@@ -243,7 +247,7 @@ def serve_nexus_ui():
             </div>
 
             <!-- Batch Upload Form Panel -->
-            <div id="batchPanel" class="bg-card border rounded-xl p-6 space-y-4 hidden">
+            <div id="batchPanel" class="bg-card border rounded-xl p-4 md:p-6 space-y-4 hidden">
                 <div class="flex items-center space-x-2 text-xs font-bold text-cyan-400 uppercase tracking-wide">
                     <i class="fa-solid fa-folder"></i>
                     <span>BATCH DATASET FILE ANALYSIS</span>
@@ -253,7 +257,7 @@ def serve_nexus_ui():
                 <div class="border-2 border-dashed border-slate-700 rounded-xl p-8 text-center bg-slate-900/40">
                     <input type="file" id="batchFile" accept=".csv" class="hidden" onchange="updateFileName()"/>
                     <label for="batchFile" class="cursor-pointer text-xs text-cyan-400 hover:underline font-semibold block" id="fileLabel">
-                        upload file 
+                        test_data.csv
                     </label>
                 </div>
 
@@ -263,29 +267,29 @@ def serve_nexus_ui():
             </div>
 
             <!-- Metrics Highlight Cards Bar -->
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div class="bg-card border rounded-xl p-4 text-center">
-                    <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">ACTIVE MODEL</p>
-                    <p id="mModel" class="text-sm font-bold text-cyan-400">Category-Aware Gradient Boosting</p>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+                <div class="bg-card border rounded-xl p-3 md:p-4 text-center">
+                    <p class="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">ACTIVE MODEL</p>
+                    <p id="mModel" class="text-xs md:text-sm font-bold text-cyan-400 truncate">Category-Aware Gradient Boosting</p>
                 </div>
-                <div class="bg-card border rounded-xl p-4 text-center">
-                    <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">MODEL ACCURACY</p>
-                    <p id="mAcc" class="text-lg font-bold text-emerald-400">84.43%</p>
+                <div class="bg-card border rounded-xl p-3 md:p-4 text-center">
+                    <p class="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">ACCURACY</p>
+                    <p id="mAcc" class="text-base md:text-lg font-bold text-emerald-400">84.43%</p>
                 </div>
-                <div class="bg-card border rounded-xl p-4 text-center">
-                    <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">REORDER POINT (ROP)</p>
-                    <p id="mRop" class="text-lg font-bold text-rose-400">153 units</p>
+                <div class="bg-card border rounded-xl p-3 md:p-4 text-center">
+                    <p class="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">REORDER POINT</p>
+                    <p id="mRop" class="text-base md:text-lg font-bold text-rose-400">153 units</p>
                 </div>
-                <div class="bg-card border rounded-xl p-4 text-center">
-                    <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">EOQ BATCH QUANTITY</p>
-                    <p id="mEoq" class="text-lg font-bold text-white">485 units</p>
+                <div class="bg-card border rounded-xl p-3 md:p-4 text-center">
+                    <p class="text-[9px] md:text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">EOQ BATCH</p>
+                    <p id="mEoq" class="text-base md:text-lg font-bold text-white">485 units</p>
                 </div>
             </div>
 
             <!-- Chart Area -->
-            <div class="bg-card border rounded-xl p-6">
+            <div class="bg-card border rounded-xl p-4 md:p-6">
                 <h3 class="text-xs font-bold text-slate-300 uppercase tracking-wider mb-4">DEMAND FORECAST PROJECTION OVERLAY</h3>
-                <div class="h-80">
+                <div class="h-64 md:h-80">
                     <canvas id="nexusChart"></canvas>
                 </div>
             </div>
@@ -294,6 +298,11 @@ def serve_nexus_ui():
 
         <script>
             let chart = null;
+
+            function toggleMobileMenu() {
+                const sidebar = document.getElementById('sidebar');
+                sidebar.classList.toggle('-translate-x-full');
+            }
 
             function switchMode(mode) {
                 const singleP = document.getElementById('singlePanel');
@@ -311,6 +320,11 @@ def serve_nexus_ui():
                     singleP.classList.add('hidden');
                     btnB.className = "w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg text-sm font-semibold bg-cyan-950/60 text-cyan-400 border border-cyan-800/50";
                     btnS.className = "w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg text-sm font-semibold text-slate-400 hover:bg-slate-800/50 hover:text-slate-200";
+                }
+
+                // Automatically close mobile menu after selecting a mode
+                if (window.innerWidth < 768) {
+                    toggleMobileMenu();
                 }
             }
 
@@ -402,7 +416,6 @@ def serve_nexus_ui():
                 renderChart(data.dates, data.forecast);
             }
 
-            // Initial load chart rendering
             window.onload = () => {
                 runSinglePredict();
             };
