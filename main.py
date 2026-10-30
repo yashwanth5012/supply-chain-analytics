@@ -253,7 +253,7 @@ def serve_nexus_ui():
                 <div class="border-2 border-dashed border-slate-700 rounded-xl p-8 text-center bg-slate-900/40">
                     <input type="file" id="batchFile" accept=".csv" class="hidden" onchange="updateFileName()"/>
                     <label for="batchFile" class="cursor-pointer text-xs text-cyan-400 hover:underline font-semibold block" id="fileLabel">
-                        test_data.csv
+                        upload file 
                     </label>
                 </div>
 
