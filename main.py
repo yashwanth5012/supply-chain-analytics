@@ -1,56 +1,195 @@
-# backend/main.py
 import io
 import os
-import json
-import joblib
 import numpy as np
 import pandas as pd
-from pathlib import Path
-from pydantic import BaseModel
-from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
+from xgboost import XGBRegressor
 
-from inventory_engine import compute_inventory_policy, compute_abc_xyz_matrix
+app = FastAPI(title="Live ML Supply Chain Engine with Explainable AI & Automated Alerts")
 
-BASE_DIR = Path(__file__).resolve().parent
-FRONTEND_DIR = BASE_DIR.parent / "frontend"
-MODEL_PATH = BASE_DIR / "model.joblib"
-METADATA_PATH = BASE_DIR / "metadata.json"
+# Global state for Real-Time Data Integration
+DATA_STORE = {
+    "df": None,
+    "current_stock": {}  # Product ID -> Current Live Inventory
+}
 
-# Global Variables for Artifacts
-MODEL_PIPELINE = None
-METADATA = None
+# Pure Python / NumPy metrics
+def calc_mae(y_true, y_pred):
+    return np.mean(np.abs(y_true - y_pred))
 
-def load_artifacts():
-    global MODEL_PIPELINE, METADATA
-    if not MODEL_PATH.exists() or not METADATA_PATH.exists():
-        raise RuntimeError("model.joblib or metadata.json not found. Train and save model first!")
+def calc_rmse(y_true, y_pred):
+    return np.sqrt(np.mean((y_true - y_pred) ** 2))
+
+# ==========================================
+# 1. MACHINE LEARNING & EXPLAINABLE AI ENGINE
+# ==========================================
+
+def train_and_forecast_sku(product_id, df_sku, current_stock_qty=None, forecast_days=30, lead_time_days=7, lead_time_std=2, service_level_z=1.65):
+    df = df_sku.copy().sort_values('date')
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.set_index('date')
+
+    # Feature Engineering
+    df['dayofweek'] = df.index.dayofweek
+    df['month'] = df.index.month
+    df['day'] = df.index.day
+    df['lag_1'] = df['quantity_sold'].shift(1)
+    df['lag_7'] = df['quantity_sold'].shift(7)
+    df['rolling_7_mean'] = df['quantity_sold'].shift(1).rolling(7).mean()
+    df['rolling_30_mean'] = df['quantity_sold'].shift(1).rolling(30).mean()
+
+    df_clean = df.dropna()
+    if len(df_clean) < 14:
+        raise ValueError("Insufficient data history (at least 14 days required).")
+
+    # Train/Validation Split (80/20)
+    split_idx = int(len(df_clean) * 0.8)
+    train_df = df_clean.iloc[:split_idx]
+    val_df = df_clean.iloc[split_idx:]
+
+    feature_cols = ['dayofweek', 'month', 'day', 'lag_1', 'lag_7', 'rolling_7_mean', 'rolling_30_mean']
+    feature_labels = {
+        'dayofweek': 'Day of Week Seasonality',
+        'month': 'Monthly Trend',
+        'day': 'Day of Month',
+        'lag_1': 'Yesterday Sales (Lag 1)',
+        'lag_7': 'Last Week Sales (Lag 7)',
+        'rolling_7_mean': '7-Day Rolling Average',
+        'rolling_30_mean': '30-Day Rolling Average'
+    }
+
+    X_train, y_train = train_df[feature_cols], train_df['quantity_sold']
+    X_val, y_val = val_df[feature_cols], val_df['quantity_sold']
+
+    # Train XGBoost Model
+    model = XGBRegressor(n_estimators=100, learning_rate=0.05, max_depth=4, random_state=42)
+    model.fit(X_train, y_train)
+
+    # Explainable AI (XAI)
+    importance_scores = model.feature_importances_
+    total_importance = float(np.sum(importance_scores)) if np.sum(importance_scores) > 0 else 1.0
+    xai_explanations = [
+        {
+            "feature": feature_labels[col],
+            "importance_pct": round(float(score / total_importance) * 100, 1)
+        }
+        for col, score in zip(feature_cols, importance_scores)
+    ]
+    xai_explanations = sorted(xai_explanations, key=lambda x: x['importance_pct'], reverse=True)
+
+    # Evaluate Accuracy
+    val_preds = model.predict(X_val)
+    mae = calc_mae(y_val, val_preds)
+    rmse = calc_rmse(y_val, val_preds)
+    actual_sum = y_val.sum()
+    wmape = (np.sum(np.abs(y_val - val_preds)) / actual_sum * 100) if actual_sum > 0 else 0.0
+
+    # Recursive Forecast Generation
+    future_dates = pd.date_range(start=df.index[-1] + pd.Timedelta(days=1), periods=forecast_days)
+    forecasts = []
+    recent_history = list(df['quantity_sold'].values)
+
+    for new_date in future_dates:
+        lag_1 = recent_history[-1]
+        lag_7 = recent_history[-7] if len(recent_history) >= 7 else lag_1
+        r7 = np.mean(recent_history[-7:])
+        r30 = np.mean(recent_history[-30:]) if len(recent_history) >= 30 else r7
+
+        feat = np.array([[new_date.dayofweek, new_date.month, new_date.day, lag_1, lag_7, r7, r30]])
+        pred = max(0, float(model.predict(feat)[0]))
+        forecasts.append({"date": new_date.strftime("%Y-%m-%d"), "forecast": round(pred, 2)})
+        recent_history.append(pred)
+
+    # Inventory Control
+    avg_daily_demand = float(df['quantity_sold'].mean())
+    std_daily_demand = float(df['quantity_sold'].std()) if len(df) > 1 else 0.0
+
+    safety_stock = int(np.ceil(service_level_z * np.sqrt(
+        (lead_time_days * (std_daily_demand ** 2)) +
+        ((avg_daily_demand ** 2) * (lead_time_std ** 2))
+    )))
+    reorder_point = int(np.ceil((avg_daily_demand * lead_time_days) + safety_stock))
+
+    stock = current_stock_qty if current_stock_qty is not None else int(avg_daily_demand * (lead_time_days + 2))
+    days_of_supply = round(stock / avg_daily_demand, 1) if avg_daily_demand > 0 else 999.0
+
+    if stock <= safety_stock:
+        alert_level = "CRITICAL"
+        alert_msg = f"Stock ({stock} units) is below Safety Stock ({safety_stock} units)! Immediate stockout risk."
+    elif stock <= reorder_point:
+        alert_level = "WARNING"
+        alert_msg = f"Stock ({stock} units) hit Reorder Point ({reorder_point} units). Trigger purchase order."
+    else:
+        alert_level = "OPTIMAL"
+        alert_msg = f"Stock ({stock} units) is optimal. Covers ~{days_of_supply} days of demand."
+
+    return {
+        "evaluation": {"mae": round(mae, 2), "rmse": round(rmse, 2), "wmape_percent": round(wmape, 2)},
+        "inventory": {
+            "current_stock": stock,
+            "safety_stock": safety_stock,
+            "reorder_point": reorder_point,
+            "days_of_supply": days_of_supply,
+            "alert_level": alert_level,
+            "alert_message": alert_msg
+        },
+        "explainable_ai": xai_explanations,
+        "history": [{"date": d.strftime("%Y-%m-%d"), "sales": float(v)} for d, v in zip(df.index, df['quantity_sold'])],
+        "forecast": forecasts
+    }
+
+# ==========================================
+# 2. FASTAPI ENDPOINTS & ROUTING
+# ==========================================
+
+@app.post("/upload-csv")
+@app.post("/api/upload-csv")
+async def upload_csv(file: UploadFile = File(...)):
+    try:
+        contents = await file.read()
+        df = pd.read_csv(io.BytesIO(contents))
+        required_cols = {'date', 'product_id', 'quantity_sold'}
+        if not required_cols.issubset(set(df.columns)):
+            raise HTTPException(status_code=400, detail=f"CSV must contain columns: {list(required_cols)}")
+
+        df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+        df['quantity_sold'] = pd.to_numeric(df['quantity_sold'], errors='coerce').fillna(0)
+        DATA_STORE["df"] = df
+        
+        skus = list(df['product_id'].unique())
+        for sku in skus:
+            if sku not in DATA_STORE["current_stock"]:
+                avg_sales = df[df['product_id'] == sku]['quantity_sold'].mean()
+                DATA_STORE["current_stock"][sku] = int(avg_sales * 10)
+
+        return {"message": "CSV loaded", "skus": skus, "total_rows": len(df)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/update-stock")
+@app.post("/api/update-stock")
+def update_stock(product_id: str, new_stock: int):
+    DATA_STORE["current_stock"][product_id] = new_stock
+    return {"message": f"Updated live stock for {product_id} to {new_stock} units"}
+
+@app.get("/train-sku/{product_id}")
+@app.get("/api/train-sku/{product_id}")
+def train_sku(product_id: str, forecast_days: int = 30, lead_time_days: int = 7):
+    if DATA_STORE["df"] is None:
+        raise HTTPException(status_code=400, detail="No dataset uploaded yet.")
+    df_sku = DATA_STORE["df"][DATA_STORE["df"]['product_id'] == product_id]
+    if len(df_sku) == 0:
+        raise HTTPException(status_code=404, detail="SKU not found.")
     
-    MODEL_PIPELINE = joblib.load(MODEL_PATH)
-    with open(METADATA_PATH, "r") as f:
-        METADATA = json.load(f)
-
-# Modern Lifespan Event Handler (Replaces deprecated @app.on_event)
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    load_artifacts()
-    yield
-
-app = FastAPI(title="NexusSCM Production Architecture API", version="5.0", lifespan=lifespan)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-if FRONTEND_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+    current_qty = DATA_STORE["current_stock"].get(product_id, None)
+    return train_and_forecast_sku(
+        product_id, 
+        df_sku, 
+        current_stock_qty=current_qty, 
+        forecast_days=forecast_days, 
+        lead_time_days=lead_time_days
+    )
 
 @app.get("/", response_class=HTMLResponse)
 def serve_ui():
@@ -157,7 +296,7 @@ def serve_ui():
                 formData.append('file', fileInput.files[0]);
                 document.getElementById('uploadStatus').innerText = "Uploading & processing data...";
 
-                const res = await fetch('/api/upload-csv', { method: 'POST', body: formData });
+                const res = await fetch('upload-csv', { method: 'POST', body: formData });
                 const data = await res.json();
 
                 if (res.ok) {
@@ -166,7 +305,7 @@ def serve_ui():
                     document.getElementById('controlPanel').classList.remove('hidden');
                     trainModel();
                 } else {
-                    document.getElementById('uploadStatus').innerText = `Error: ${data.detail}`;
+                    document.getElementById('uploadStatus').innerText = `Error: ${data.detail || 'Failed to process file'}`;
                 }
             }
 
@@ -175,7 +314,7 @@ def serve_ui():
                 const newStock = document.getElementById('liveStockInput').value;
                 if (!newStock) return alert("Enter a stock quantity.");
 
-                await fetch(`/api/update-stock?product_id=${sku}&new_stock=${newStock}`, { method: 'POST' });
+                await fetch(`update-stock?product_id=${sku}&new_stock=${newStock}`, { method: 'POST' });
                 trainModel();
             }
 
@@ -184,7 +323,7 @@ def serve_ui():
                 const days = document.getElementById('forecastDays').value;
                 const leadTime = document.getElementById('leadTime').value;
 
-                const res = await fetch(`/api/train-sku/${sku}?forecast_days=${days}&lead_time_days=${leadTime}`);
+                const res = await fetch(`train-sku/${sku}?forecast_days=${days}&lead_time_days=${leadTime}`);
                 const data = await res.json();
                 if (!res.ok) return alert(data.detail);
 
@@ -251,200 +390,3 @@ def serve_ui():
     </body>
     </html>
     """
-
-
-# Request Schema for Single Analysis
-class SinglePredictRequest(BaseModel):
-    product_line: str = "Electronic accessories"
-    lag_1: float = 18.0
-    lag_2: float = 16.0
-    lag_7: float = 14.0
-    rolling_mean_3: float = 17.0
-    rolling_mean_7: float = 15.5
-    rolling_std_7: float = 2.1
-    ema_7: float = 16.2
-    price_per_unit: float = 55.0
-    avg_rating: float = 7.2
-    cogs_ratio: float = 0.95
-    horizon: int = 14
-    lead_time_days: float = 7.0
-    lead_time_std: float = 1.5
-    service_level: float = 0.95
-    holding_cost: float = 2.5
-    order_cost: float = 50.0
-    current_stock: float = 120.0
-
-
-# --- 1. SINGLE ANALYSIS ENDPOINT (Using Saved joblib Model) ---
-@app.post("/api/predict/single")
-def predict_single(req: SinglePredictRequest):
-    if MODEL_PIPELINE is None:
-        load_artifacts()
-
-    input_data = pd.DataFrame([{
-        'day_of_week': 2,
-        'month': 10,
-        'day_of_month': 15,
-        'is_weekend': 0,
-        'lag_1': req.lag_1,
-        'lag_2': req.lag_2,
-        'lag_7': req.lag_7,
-        'rolling_mean_3': req.rolling_mean_3,
-        'rolling_mean_7': req.rolling_mean_7,
-        'rolling_std_7': req.rolling_std_7,
-        'ema_7': req.ema_7,
-        'price_per_unit': req.price_per_unit,
-        'avg_rating': req.avg_rating,
-        'cogs_ratio': req.cogs_ratio,
-        'demand_momentum': req.lag_1 / (req.rolling_mean_7 + 1e-5),
-        'product_line': req.product_line
-    }])
-
-    predictions = []
-    curr_lag1 = req.lag_1
-    curr_roll7 = req.rolling_mean_7
-    
-    for i in range(1, req.horizon + 1):
-        input_data['lag_1'] = curr_lag1
-        input_data['rolling_mean_7'] = curr_roll7
-        
-        pred_val = float(MODEL_PIPELINE.predict(input_data)[0])
-        pred_val = round(max(0.0, pred_val), 2)
-        
-        predictions.append({"date": f"Day +{i}", "predicted_sales": pred_val})
-        curr_lag1 = pred_val
-        curr_roll7 = (curr_roll7 * 6 + pred_val) / 7.0
-
-    synthetic_history = [req.lag_7, req.lag_2, req.lag_1, req.rolling_mean_3, req.rolling_mean_7]
-    inv_kpis = compute_inventory_policy(
-        demand_history=synthetic_history,
-        lead_time_days=req.lead_time_days,
-        lead_time_std=req.lead_time_std,
-        service_level=req.service_level,
-        order_cost=req.order_cost,
-        holding_cost_unit_year=req.holding_cost
-    )
-
-    stockout_alert = req.current_stock <= inv_kpis['reorder_point']
-    inv_payload = {
-        **inv_kpis,
-        "capital_at_risk": round(inv_kpis['safety_stock'] * req.price_per_unit, 2),
-        "current_stock": req.current_stock,
-        "stockout_alert": stockout_alert,
-        "recommended_order_quantity": inv_kpis['economic_order_quantity'] if stockout_alert else 0
-    }
-
-    return {
-        "status": "success",
-        "analysis_type": "Single Item Prediction",
-        "model_used": METADATA["winning_model"],
-        "accuracy_score": METADATA["leaderboard"][METADATA["winning_model"]]["Accuracy"],
-        "inventory_kpis": inv_payload,
-        "forecast_data": predictions
-    }
-
-
-# --- 2. BATCH ANALYSIS ENDPOINT (Using Saved joblib Model) ---
-@app.post("/api/predict/batch")
-async def predict_batch(
-    file: UploadFile = File(...),
-    horizon: int = 14,
-    service_level: float = 0.95,
-    lead_time_days: float = 7.0,
-    lead_time_std: float = 1.5,
-    order_cost: float = 50.0,
-    holding_cost: float = 2.5,
-    current_stock: float = 500.0
-):
-    if MODEL_PIPELINE is None:
-        load_artifacts()
-
-    contents = await file.read()
-    try:
-        df = pd.read_excel(io.BytesIO(contents)) if file.filename.endswith('.xlsx') else pd.read_csv(io.StringIO(contents.decode('utf-8')))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"File parsing error: {str(e)}")
-
-    df['Date'] = pd.to_datetime(df['Date'], errors='coerce') if 'Date' in df.columns else pd.to_datetime(df.iloc[:, 0], errors='coerce')
-    target_col = 'Quantity' if 'Quantity' in df.columns else ('Total' if 'Total' in df.columns else df.columns[1])
-    df['sales'] = pd.to_numeric(df[target_col].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False), errors='coerce').fillna(0)
-    
-    clean_df = df.dropna(subset=['Date']).sort_values('Date').reset_index(drop=True)
-    sales_history = clean_df['sales'].tail(30).tolist()
-    date_history = clean_df['Date'].tail(30).dt.strftime("%Y-%m-%d").tolist()
-
-    last_val = sales_history[-1]
-    mean_val = float(np.mean(sales_history))
-    std_val = float(np.std(sales_history)) if len(sales_history) > 1 else 1.0
-
-    batch_input = pd.DataFrame([{
-        'day_of_week': 1,
-        'month': 10,
-        'day_of_month': 15,
-        'is_weekend': 0,
-        'lag_1': last_val,
-        'lag_2': sales_history[-2] if len(sales_history) > 1 else last_val,
-        'lag_7': sales_history[-7] if len(sales_history) >= 7 else last_val,
-        'rolling_mean_3': float(np.mean(sales_history[-3:])),
-        'rolling_mean_7': float(np.mean(sales_history[-7:])),
-        'rolling_std_7': std_val,
-        'ema_7': mean_val,
-        'price_per_unit': 25.0,
-        'avg_rating': 7.0,
-        'cogs_ratio': 0.95,
-        'demand_momentum': last_val / (mean_val + 1e-5),
-        'product_line': 'Electronic accessories'
-    }])
-
-    predictions = []
-    last_date = pd.to_datetime(date_history[-1])
-    curr_lag = last_val
-
-    for i in range(1, horizon + 1):
-        next_date = last_date + pd.Timedelta(days=i)
-        batch_input['lag_1'] = curr_lag
-        pred_val = float(MODEL_PIPELINE.predict(batch_input)[0])
-        pred_val = round(max(0.0, pred_val), 2)
-
-        predictions.append({"date": next_date.strftime("%Y-%m-%d"), "predicted_sales": pred_val})
-        curr_lag = pred_val
-
-    inv_kpis = compute_inventory_policy(
-        demand_history=sales_history,
-        lead_time_days=lead_time_days,
-        lead_time_std=lead_time_std,
-        service_level=service_level,
-        order_cost=order_cost,
-        holding_cost_unit_year=holding_cost
-    )
-
-    stockout_alert = current_stock <= inv_kpis['reorder_point']
-    inv_payload = {
-        **inv_kpis,
-        "capital_at_risk": round(inv_kpis['safety_stock'] * 25.0, 2),
-        "current_stock": current_stock,
-        "stockout_alert": stockout_alert,
-        "recommended_order_quantity": inv_kpis['economic_order_quantity'] if stockout_alert else 0
-    }
-
-    abc_xyz = compute_abc_xyz_matrix([{'item_id': 'BATCH-SKU-01', 'sales_history': sales_history}])
-    historical_series = [{"date": d, "sales": s} for d, s in zip(date_history, sales_history)]
-
-    return {
-        "status": "success",
-        "analysis_type": "Batch File Analysis",
-        "model_used": METADATA["winning_model"],
-        "accuracy_score": METADATA["leaderboard"][METADATA["winning_model"]]["Accuracy"],
-        "model_performance": {
-            "winning_model": METADATA["winning_model"],
-            "leaderboard": METADATA["leaderboard"]
-        },
-        "inventory_kpis": inv_payload,
-        "abc_xyz_matrix": abc_xyz,
-        "historical_data": historical_series,
-        "forecast_data": predictions
-    }
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
