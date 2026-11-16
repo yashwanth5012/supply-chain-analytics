@@ -180,11 +180,16 @@ async def batch_predict(
             # Generate representative category SKUs for analysis
             base_sales = np.mean(p50)
             sku_records = [
-                {"sku": "SKU-ALPHA-101", "name": "Core Sensor Module", "sales_history": [base_sales * 1.5, base_sales * 1.4, base_sales * 1.6], "unit_price": 85.0},
-                {"sku": "SKU-BETA-202", "name": "Micro-Controller Unit", "sales_history": [base_sales * 0.8, base_sales * 0.9, base_sales * 0.85], "unit_price": 45.0},
-                {"sku": "SKU-GAMMA-303", "name": "Bulk Enclosure Box", "sales_history": [base_sales * 0.4, base_sales * 0.3, base_sales * 0.5], "unit_price": 12.0},
-                {"sku": "SKU-DELTA-404", "name": "Precision Cable Harness", "sales_history": [base_sales * 0.2, base_sales * 0.9, base_sales * 0.1], "unit_price": 120.0},
-                {"sku": "SKU-EPSILON-505", "name": "Lithium Battery Pack", "sales_history": [base_sales * 1.1, base_sales * 1.2, base_sales * 1.15], "unit_price": 65.0}
+                {"sku": "SKU-ALPHA-101", "name": "Core Sensor Module (Electronic Accessories)", "sales_history": [base_sales * 1.5, base_sales * 1.4, base_sales * 1.6], "unit_price": 85.0},
+                {"sku": "SKU-BETA-202", "name": "4K Display Unit (Consumer Electronics)", "sales_history": [base_sales * 0.8, base_sales * 0.9, base_sales * 0.85], "unit_price": 240.0},
+                {"sku": "SKU-GAMMA-303", "name": "Brake Caliper Assembly (Automotive & Spare Parts)", "sales_history": [base_sales * 0.6, base_sales * 0.65, base_sales * 0.7], "unit_price": 110.0},
+                {"sku": "SKU-DELTA-404", "name": "Sterile Vaccine Vials (Pharmaceuticals & Healthcare)", "sales_history": [base_sales * 1.8, base_sales * 1.9, base_sales * 1.75], "unit_price": 95.0},
+                {"sku": "SKU-EPSILON-505", "name": "Hydraulic Pump Valve (Industrial Equipment)", "sales_history": [base_sales * 0.3, base_sales * 0.25, base_sales * 0.35], "unit_price": 320.0},
+                {"sku": "SKU-ZETA-606", "name": "Trail Running Boots (Apparel & Fashion)", "sales_history": [base_sales * 1.1, base_sales * 1.3, base_sales * 0.9], "unit_price": 75.0},
+                {"sku": "SKU-ETA-707", "name": "Cold-Pressed Juice (Perishables & Fresh FMCG)", "sales_history": [base_sales * 2.1, base_sales * 2.3, base_sales * 2.0], "unit_price": 18.0},
+                {"sku": "SKU-THETA-808", "name": "Ergonomic Mesh Chair (Home & Office Furniture)", "sales_history": [base_sales * 0.5, base_sales * 0.45, base_sales * 0.55], "unit_price": 185.0},
+                {"sku": "SKU-IOTA-909", "name": "Toner Cartridge Pack (Office Supplies)", "sales_history": [base_sales * 0.9, base_sales * 0.95, base_sales * 0.88], "unit_price": 42.0},
+                {"sku": "SKU-KAPPA-010", "name": "Industrial Polymer Resin (Chemicals & Raw Materials)", "sales_history": [base_sales * 0.7, base_sales * 0.6, base_sales * 0.8], "unit_price": 150.0}
             ]
 
         abc_xyz = compute_abc_xyz_matrix(sku_records)
@@ -455,11 +460,16 @@ def serve_control_tower_ui():
                         <div>
                             <label class="block font-semibold mb-1.5 text-slate-300">Product Category</label>
                             <select id="sCat" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white focus:border-cyan-500 focus:outline-none">
-                                <option>Electronic accessories</option>
+                                <option>Electronic Accessories</option>
                                 <option>Consumer Electronics</option>
-                                <option>Office Supplies</option>
-                                <option>Industrial Parts</option>
-                                <option>Perishables / FMCG</option>
+                                <option>Automotive & Spare Parts</option>
+                                <option>Pharmaceuticals & Healthcare</option>
+                                <option>Industrial Equipment & Machinery</option>
+                                <option>Apparel & Fashion Footwear</option>
+                                <option>Perishables & Fresh FMCG</option>
+                                <option>Home Appliances & Furniture</option>
+                                <option>Office Supplies & Stationery</option>
+                                <option>Chemicals & Raw Materials</option>
                             </select>
                         </div>
                         <div>

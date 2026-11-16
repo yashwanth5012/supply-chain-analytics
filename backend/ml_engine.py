@@ -349,11 +349,20 @@ def predict_single_sku_forecast(
     Generates multi-step recursive forecasts with P10/P50/P90 confidence bands for single SKU simulation.
     """
     category_multipliers = {
+        "Electronic Accessories": 1.05,
         "Electronic accessories": 1.05,
         "Consumer Electronics": 1.15,
-        "Office Supplies": 0.95,
-        "Industrial Parts": 1.10,
-        "Perishables / FMCG": 1.25
+        "Automotive & Spare Parts": 1.08,
+        "Pharmaceuticals & Healthcare": 1.12,
+        "Industrial Equipment & Machinery": 1.04,
+        "Industrial Parts": 1.04,
+        "Apparel & Fashion Footwear": 1.20,
+        "Perishables & Fresh FMCG": 1.28,
+        "Perishables / FMCG": 1.28,
+        "Home Appliances & Furniture": 0.98,
+        "Office Supplies & Stationery": 0.92,
+        "Office Supplies": 0.92,
+        "Chemicals & Raw Materials": 1.02
     }
     cat_factor = category_multipliers.get(product_category, 1.0)
     price_sensitivity = max(0.8, 1.0 - (unit_price * 0.001))
